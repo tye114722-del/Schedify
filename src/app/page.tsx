@@ -293,7 +293,7 @@ export default function ScheduleManager() {
     } else if (e.key === 'Escape' && showTaskForm) {
       setShowTaskForm(false);
     }
-  }, [view, showTaskForm]);
+  }, [view, showTaskForm, nextDay, nextMonth, prevDay, prevMonth]); // 添加所有依赖项
   
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -476,7 +476,8 @@ export default function ScheduleManager() {
                 '开始时间': log.startTime,
                 '结束时间': log.endTime,
                 '持续时间': `${Math.floor(log.duration/60)}小时${log.duration%60}分钟`,
-                '总时长': `${Math.floor(task.totalDuration/60)}小时${task.totalDuration%60}分钟`,
+                // 修复: 处理 totalDuration 可能为 undefined 的情况
+                '总时长': `${Math.floor((task.totalDuration || 0)/60)}小时${(task.totalDuration || 0)%60}分钟`,
                 '状态': task.completed ? '已完成' : '进行中'
               });
             });
@@ -487,6 +488,7 @@ export default function ScheduleManager() {
               '开始时间': '无记录',
               '结束时间': '无记录',
               '持续时间': '0分钟',
+              // 修复: 处理 totalDuration 可能为 undefined 的情况
               '总时长': `${Math.floor((task.totalDuration || 0)/60)}小时${(task.totalDuration || 0)%60}分钟`,
               '状态': task.completed ? '已完成' : '进行中'
             });
