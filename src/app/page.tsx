@@ -450,99 +450,103 @@ export default function ScheduleManager() {
   }, []);
 
   const exportWeeklyReport = async () => {
-    setLoading(true);
-    try {
-      const today = new Date();
-      const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 });
-      const endOfWeekDate = endOfWeek(today, { weekStartsOn: 1 });
-      const allTasks = await db.getAllTasks();
-      const weeklyData: Record<string, WeeklyTaskRecord[]> = {};
-      const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  setLoading(true);
+  try {
+    const today = new Date();
+    const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 });
+    const endOfWeekDate = endOfWeek(today, { weekStartsOn: 1 });
+    const allTasks = await db.getAllTasks();
+    const weeklyData: Record<string, WeeklyTaskRecord[]> = {};
+    const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(startOfWeekDate);
+      day.setDate(startOfWeekDate.getDate() + i);
+      const dateStr = format(day, 'yyyy-MM-dd');
+      weeklyData[days[i]] = [];
       
-      for (let i = 0; i < 7; i++) {
-        const day = new Date(startOfWeekDate);
-        day.setDate(startOfWeekDate.getDate() + i);
-        const dateStr = format(day, 'yyyy-MM-dd');
-        weeklyData[days[i]] = [];
-        
-        const dailyTasks = allTasks.filter(task => shouldTaskAppearOnDate(task, dateStr));
-        
-        dailyTasks.forEach(task => {
-          if (task.logs && task.logs.length > 0) {
-            task.logs.forEach(log => {
-              weeklyData[days[i]].push({
-                '任务名称': task.title,
-                '任务描述': task.description || '',
-                '开始时间': log.startTime,
-                '结束时间': log.endTime,
-                '持续时间': `${Math.floor(log.duration/60)}小时${log.duration%60}分钟`,
-                // 修复: 处理 totalDuration 可能为 undefined 的情况
-                '总时长': `${Math.floor((task.totalDuration || 0)/60)}小时${(task.totalDuration || 0)%60}分钟`,
-                '状态': task.completed ? '已完成' : '进行中'
-              });
-            });
-          } else {
+      const dailyTasks = allTasks.filter(task => shouldTaskAppearOnDate(task, dateStr));
+      
+      dailyTasks.forEach(task => {
+        if (task.logs && task.logs.length > 0) {
+          task.logs.forEach(log => {
             weeklyData[days[i]].push({
               '任务名称': task.title,
               '任务描述': task.description || '',
-              '开始时间': '无记录',
-              '结束时间': '无记录',
-              '持续时间': '0分钟',
-              // 修复: 处理 totalDuration 可能为 undefined 的情况
+              '开始时间': log.startTime,
+              '结束时间': log.endTime,
+              '持续时间': `${Math.floor(log.duration/60)}小时${log.duration%60}分钟`,
               '总时长': `${Math.floor((task.totalDuration || 0)/60)}小时${(task.totalDuration || 0)%60}分钟`,
               '状态': task.completed ? '已完成' : '进行中'
             });
-          }
-        });
-        
-        if (weeklyData[days[i]].length === 0) {
+          });
+        } else {
           weeklyData[days[i]].push({
-            '任务名称': '无任务记录',
-            '任务描述': '',
-            '开始时间': '',
-            '结束时间': '',
-            '持续时间': '',
-            '总时长': '',
-            '状态': ''
+            '任务名称': task.title,
+            '任务描述': task.description || '',
+            '开始时间': '无记录',
+            '结束时间': '无记录',
+            '持续时间': '0分钟',
+            '总时长': `${Math.floor((task.totalDuration || 0)/60)}小时${(task.totalDuration || 0)%60}分钟`,
+            '状态': task.completed ? '已完成' : '进行中'
           });
         }
-      }
-      
-      const wb = XLSX.utils.book_new();
-      
-      days.forEach(day => {
-        const ws = XLSX.utils.json_to_sheet(weeklyData[day]);
-        XLSX.utils.book_append_sheet(wb, ws, day);
       });
       
-      const summaryData = days.map(day => ({
-        '日期': day,
-        '任务数量': weeklyData[day].filter(item => item['任务名称'] !== '无任务记录').length,
-        '总工作时间': weeklyData[day].reduce((sum, item) => {
-          if (item['持续时间']) {
-            const match = item['持续时间'].match(/(\d+)小时(\d+)分钟/);
-            if (match) {
-              return sum + parseInt(match[1]) * 60 + parseInt(match[2]);
-            }
-          }
-          return sum;
-        }, 0)
-      }));
-      
-      // 创建新数组用于导出，避免修改原始数据
-      const summarySheet = XLSX.utils.json_to_sheet(summaryDataForExport);
-      XLSX.utils.book_append_sheet(wb, summarySheet, '周汇总');
-      
-      const weekRange = `${format(startOfWeekDate, 'yyyyMMdd')}-${format(endOfWeekDate, 'yyyyMMdd')}`;
-      XLSX.writeFile(wb, `工作周报_${weekRange}.xlsx`);
-      
-    } catch (error) {
-      console.error('导出周报失败:', error);
-      alert('导出周报失败，请重试');
-    } finally {
-      setLoading(false);
+      if (weeklyData[days[i]].length === 0) {
+        weeklyData[days[i]].push({
+          '任务名称': '无任务记录',
+          '任务描述': '',
+          '开始时间': '',
+          '结束时间': '',
+          '持续时间': '',
+          '总时长': '',
+          '状态': ''
+        });
+      }
     }
-  };
+    
+    const wb = XLSX.utils.book_new();
+    
+    days.forEach(day => {
+      const ws = XLSX.utils.json_to_sheet(weeklyData[day]);
+      XLSX.utils.book_append_sheet(wb, ws, day);
+    });
+    
+    const summaryData = days.map(day => ({
+      '日期': day,
+      '任务数量': weeklyData[day].filter(item => item['任务名称'] !== '无任务记录').length,
+      '总工作时间': weeklyData[day].reduce((sum, item) => {
+        if (item['持续时间']) {
+          const match = item['持续时间'].match(/(\d+)小时(\d+)分钟/);
+          if (match) {
+            return sum + parseInt(match[1]) * 60 + parseInt(match[2]);
+          }
+        }
+        return sum;
+      }, 0)
+    }));
+    
+    // 使用正确的变量名 summaryDataForExport
+    const summaryDataForExport = summaryData.map(item => ({
+      ...item,
+      '总工作时间': `${Math.floor(item['总工作时间']/60)}小时${item['总工作时间']%60}分钟`
+    }));
+    
+    // 使用正确的变量名 summaryDataForExport
+    const summarySheet = XLSX.utils.json_to_sheet(summaryDataForExport);
+    XLSX.utils.book_append_sheet(wb, summarySheet, '周汇总');
+    
+    const weekRange = `${format(startOfWeekDate, 'yyyyMMdd')}-${format(endOfWeekDate, 'yyyyMMdd')}`;
+    XLSX.writeFile(wb, `工作周报_${weekRange}.xlsx`);
+    
+  } catch (error) {
+    console.error('导出周报失败:', error);
+    alert('导出周报失败，请重试');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const CalendarView = () => {
     const monthStart = startOfMonth(currentDate);
