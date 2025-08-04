@@ -26,6 +26,18 @@ import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 
+// 新增类型定义
+interface WeeklyTaskRecord {
+  '任务名称': string;
+  '任务描述': string;
+  '开始时间': string;
+  '结束时间': string;
+  '持续时间': string;
+  '总时长': string;
+  '状态': string;
+}
+
+
 const isTimeRangeOverlap = (
   newStart: string, 
   newEnd: string, 
@@ -245,7 +257,7 @@ export default function ScheduleManager() {
     } else if (e.key === 'Escape' && showTaskForm) {
       setShowTaskForm(false);
     }
-  }, [view, showTaskForm]);
+  }, [view, showTaskForm, prevDay, nextDay, prevMonth, nextMonth]); // 添加缺失的依赖
   
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -443,7 +455,7 @@ export default function ScheduleManager() {
       const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 });
       const endOfWeekDate = endOfWeek(today, { weekStartsOn: 1 });
       const allTasks = await db.getAllTasks();
-      const weeklyData: Record<string, any[]> = {};
+      const weeklyData: Record<string, WeeklyTaskRecord[]> = {};
       const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
       
       for (let i = 0; i < 7; i++) {
