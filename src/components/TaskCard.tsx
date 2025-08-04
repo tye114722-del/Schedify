@@ -42,7 +42,7 @@ export default function TaskCard({
       log.date !== date || log.startTime !== start || log.endTime !== end
     ) || [];
     
-    return validateTimeRange(start, end, otherLogs);
+    return validateTimeRange(start, end);
   }, [validateTimeRange, localTask.logs]);
 
   const handleDoubleClick = () => {
