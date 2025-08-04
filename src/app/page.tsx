@@ -144,7 +144,7 @@ const DraggableTaskCard = ({
         onDelete={onDelete}
         taskColor={taskColor}
         validateTimeRange={(startTime, endTime) => 
-          isTimeRangeOverlap(startTime, endTime, task.logs)
+          isTimeRangeOverlap(startTime, endTime, task.logs || [])
         }
       />
     </div>
@@ -245,6 +245,42 @@ export default function ScheduleManager() {
     setTaskToDelete(id);
   };
   
+  const nextDay = useCallback(() => {
+    setDirection(1);
+    setCurrentDate(addDays(currentDate, 1));
+  }, [currentDate]);
+
+  const prevDay = useCallback(() => {
+    setDirection(-1);
+    setCurrentDate(subDays(currentDate, 1));
+  }, [currentDate]);
+
+  const nextMonth = useCallback(() => {
+    setDirection(1);
+    setCurrentDate(addMonths(currentDate, 1));
+  }, [currentDate]);
+
+  const prevMonth = useCallback(() => {
+    setDirection(-1);
+    setCurrentDate(subMonths(currentDate, 1));
+  }, [currentDate]);
+
+  const goToday = () => {
+    setDirection(0);
+    setCurrentDate(new Date());
+  };
+
+  const changeView = (newView: 'day' | 'month') => {
+    setDirection(0);
+    setView(newView);
+  };
+
+  const handleDateClick = (day: Date) => {
+    setCurrentDate(day);
+    setView('day');
+  };
+
+
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'ArrowLeft') {
       if (view === 'day') prevDay();
@@ -257,7 +293,7 @@ export default function ScheduleManager() {
     } else if (e.key === 'Escape' && showTaskForm) {
       setShowTaskForm(false);
     }
-  }, [view, showTaskForm, prevDay, nextDay, prevMonth, nextMonth]); // 添加缺失的依赖
+  }, [view, showTaskForm]);
   
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -412,41 +448,6 @@ export default function ScheduleManager() {
       return updatedTasks;
     });
   }, []);
-
-  const nextDay = useCallback(() => {
-    setDirection(1);
-    setCurrentDate(addDays(currentDate, 1));
-  }, [currentDate]);
-
-  const prevDay = useCallback(() => {
-    setDirection(-1);
-    setCurrentDate(subDays(currentDate, 1));
-  }, [currentDate]);
-
-  const nextMonth = useCallback(() => {
-    setDirection(1);
-    setCurrentDate(addMonths(currentDate, 1));
-  }, [currentDate]);
-
-  const prevMonth = useCallback(() => {
-    setDirection(-1);
-    setCurrentDate(subMonths(currentDate, 1));
-  }, [currentDate]);
-
-  const goToday = () => {
-    setDirection(0);
-    setCurrentDate(new Date());
-  };
-
-  const changeView = (newView: 'day' | 'month') => {
-    setDirection(0);
-    setView(newView);
-  };
-
-  const handleDateClick = (day: Date) => {
-    setCurrentDate(day);
-    setView('day');
-  };
 
   const exportWeeklyReport = async () => {
     setLoading(true);
@@ -928,7 +929,7 @@ export default function ScheduleManager() {
                                     onDelete={requestDelete}
                                     taskColor="bg-gray-100 border-gray-200"
                                     validateTimeRange={(startTime, endTime) => 
-                                      isTimeRangeOverlap(startTime, endTime, task.logs)
+                                      isTimeRangeOverlap(startTime, endTime, task.logs || [])
                                     }
                                   />
                                 </div>
