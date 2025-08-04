@@ -529,12 +529,9 @@ export default function ScheduleManager() {
         }, 0)
       }));
       
-      summaryData.forEach(item => {
-        item['总工作时间'] = `${Math.floor(item['总工作时间']/60)}小时${item['总工作时间']%60}分钟`;
-      });
-      
-      const summaryWs = XLSX.utils.json_to_sheet(summaryData);
-      XLSX.utils.book_append_sheet(wb, summaryWs, '周汇总');
+      // 创建新数组用于导出，避免修改原始数据
+      const summarySheet = XLSX.utils.json_to_sheet(summaryDataForExport);
+      XLSX.utils.book_append_sheet(wb, summarySheet, '周汇总');
       
       const weekRange = `${format(startOfWeekDate, 'yyyyMMdd')}-${format(endOfWeekDate, 'yyyyMMdd')}`;
       XLSX.writeFile(wb, `工作周报_${weekRange}.xlsx`);
