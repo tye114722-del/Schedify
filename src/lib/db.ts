@@ -1,10 +1,9 @@
-import { Task, TaskLog } from '@/types';
+import { Task } from '@/types';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 const initDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
-    // 升级到版本4，修复字段初始化问题
     const request = indexedDB.open('ScheduleManagerDB', 4);
     
     request.onerror = () => {
@@ -19,7 +18,6 @@ const initDB = (): Promise<IDBDatabase> => {
       const db = (event.target as IDBOpenDBRequest).result;
       const oldVersion = event.oldVersion || 0;
       
-      // 版本0到版本1的升级（如果从0开始）
       if (oldVersion < 1) {
         if (!db.objectStoreNames.contains('tasks')) {
           const store = db.createObjectStore('tasks', { keyPath: 'id' });
@@ -27,26 +25,22 @@ const initDB = (): Promise<IDBDatabase> => {
         }
       }
       
-      // 版本1到版本2的升级
       if (oldVersion < 2) {
         const transaction = (event.target as IDBOpenDBRequest).transaction;
         if (transaction) {
           const store = transaction.objectStore('tasks');
           
-          // 添加 order 索引
           if (!store.indexNames.contains('by-order')) {
             store.createIndex('by-order', 'order');
           }
         }
       }
       
-      // 版本2到版本3的升级
       if (oldVersion < 3) {
         const transaction = (event.target as IDBOpenDBRequest).transaction;
         if (transaction) {
           const store = transaction.objectStore('tasks');
           
-          // 添加新字段索引
           if (!store.indexNames.contains('by-startDate')) {
             store.createIndex('by-startDate', 'startDate');
           }
@@ -61,19 +55,16 @@ const initDB = (): Promise<IDBDatabase> => {
         }
       }
       
-      // 版本3到版本4的升级 - 修复字段初始化问题
       if (oldVersion < 4) {
         const transaction = (event.target as IDBOpenDBRequest).transaction;
         if (transaction) {
           const store = transaction.objectStore('tasks');
           
-          // 为所有任务添加新字段
           const getAllRequest = store.getAll();
           
           getAllRequest.onsuccess = () => {
             const tasks = getAllRequest.result as Task[];
             tasks.forEach(task => {
-              // 确保字段正确初始化
               const updatedTask: Task = {
                 ...task,
                 startDate: task.startDate || task.date || '',
@@ -82,7 +73,6 @@ const initDB = (): Promise<IDBDatabase> => {
                 totalDuration: task.totalDuration || 0
               };
               
-              // 更新任务
               store.put(updatedTask);
             });
           };
@@ -106,10 +96,9 @@ export const db = {
     const store = transaction.objectStore('tasks');
     
     return new Promise((resolve, reject) => {
-      // 为新任务添加默认值
       const taskWithDefaults: Task = { 
         ...task, 
-        id: Date.now().toString(), // 生成唯一ID
+        id: Date.now().toString(),
         order: task.order || 0,
         date: task.date || '',
         startDate: task.startDate || task.date || '',
@@ -139,9 +128,8 @@ export const db = {
     
     return new Promise((resolve, reject) => {
       const tasks: Task[] = [];
-      const seenIds = new Set<string>(); // 防止重复添加
+      const seenIds = new Set<string>();
       
-      // 查询日期匹配的任务（临时任务）
       const dateRequest = store.index('by-date').openCursor(IDBKeyRange.only(date));
       
       dateRequest.onsuccess = (event) => {
@@ -151,7 +139,6 @@ export const db = {
           seenIds.add(cursor.value.id);
           cursor.continue();
         } else {
-          // 继续查询周期性任务
           const range = IDBKeyRange.bound('', '\uffff');
           const cursorRequest = store.openCursor(range);
           
@@ -160,13 +147,11 @@ export const db = {
             if (cursor) {
               const task = cursor.value;
               
-              // 检查是否为周期性任务且日期在范围内
               if (task.startDate && task.endDate) {
                 const currentDate = new Date(date).getTime();
                 const startDate = new Date(task.startDate).getTime();
                 const endDate = new Date(task.endDate).getTime();
                 
-                // 避免重复添加任务
                 if (currentDate >= startDate && currentDate <= endDate && !seenIds.has(task.id)) {
                   tasks.push(task);
                 }
@@ -174,7 +159,6 @@ export const db = {
               
               cursor.continue();
             } else {
-              // 按 order 排序
               resolve(tasks.sort((a, b) => (a.order || 0) - (b.order || 0)));
             }
           };
@@ -198,9 +182,8 @@ export const db = {
     
     return new Promise((resolve, reject) => {
       const tasks: Task[] = [];
-      const seenIds = new Set<string>(); // 防止重复添加
+      const seenIds = new Set<string>();
       
-      // 首先获取指定日期范围内的任务（基于date字段）
       const dateRangeRequest = store.index('by-date')
         .openCursor(IDBKeyRange.bound(startDate, endDate));
       
@@ -211,7 +194,6 @@ export const db = {
           seenIds.add(cursor.value.id);
           cursor.continue();
         } else {
-          // 继续获取周期性任务
           const cursorRequest = store.openCursor();
           
           cursorRequest.onsuccess = (e) => {
@@ -219,14 +201,12 @@ export const db = {
             if (cursor) {
               const task = cursor.value;
               
-              // 检查是否为周期性任务且日期在范围内
               if (task.startDate && task.endDate && !seenIds.has(task.id)) {
                 const taskStart = new Date(task.startDate).getTime();
                 const taskEnd = new Date(task.endDate).getTime();
                 const rangeStart = new Date(startDate).getTime();
                 const rangeEnd = new Date(endDate).getTime();
                 
-                // 检查任务周期与查询范围是否有重叠
                 if ((taskStart >= rangeStart && taskStart <= rangeEnd) ||
                     (taskEnd >= rangeStart && taskEnd <= rangeEnd) ||
                     (taskStart <= rangeStart && taskEnd >= rangeEnd)) {
@@ -258,7 +238,6 @@ export const db = {
     const store = transaction.objectStore('tasks');
     
     return new Promise((resolve, reject) => {
-      // 确保所有字段存在
       const updatedTask: Task = {
         ...task,
         startDate: task.startDate || task.date || '',
@@ -297,19 +276,16 @@ export const db = {
     });
   },
   
-  // 批量更新任务顺序
   async batchUpdateTaskOrder(tasks: Task[]): Promise<void> {
     const db = await this.getDB();
     const transaction = db.transaction('tasks', 'readwrite');
     const store = transaction.objectStore('tasks');
     
     return new Promise((resolve, reject) => {
-      // 计数器，确保所有更新完成
       let completed = 0;
       let hasError = false;
       
       tasks.forEach(task => {
-        // 确保任务有完整字段
         const updatedTask: Task = {
           ...task,
           startDate: task.startDate || task.date || '',
@@ -335,7 +311,6 @@ export const db = {
     });
   },
   
-  // 获取所有任务（用于日历视图）
   async getAllTasks(): Promise<Task[]> {
     const db = await this.getDB();
     const transaction = db.transaction('tasks', 'readonly');
@@ -345,7 +320,6 @@ export const db = {
       const request = store.getAll();
       
       request.onsuccess = () => {
-        // 确保所有任务有完整字段
         const tasks = request.result.map(task => ({
           ...task,
           startDate: task.startDate || task.date || '',

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Task, TaskLog } from '@/types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Task } from '@/types';
 import { motion } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
 
@@ -21,47 +21,45 @@ export default function TaskCard({
   const [isEditing, setIsEditing] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showLogForm, setShowLogForm] = useState(false);
-  const [newLog, setNewLog] = useState<Omit<TaskLog, 'id'>>({
+  const [newLog, setNewLog] = useState<{ date: string; startTime: string; endTime: string; duration: number }>({
     date: format(new Date(), 'yyyy-MM-dd'),
     startTime: '09:00',
     endTime: '10:00',
     duration: 60
   });
   
-  // 使用本地状态管理任务数据
   const [localTask, setLocalTask] = useState<Task>(task);
-  
   const formRef = useRef<HTMLDivElement>(null);
 
-  // 当父组件传递的任务更新时，同步本地状态
   useEffect(() => {
     setLocalTask(task);
   }, [task]);
 
-  // 时间段重叠验证
-  const isTimeRangeOverlap = (start: string, end: string, date: string) => {
+  const isTimeRangeOverlap = useCallback((start: string, end: string, date: string) => {
     if (!validateTimeRange) return false;
     
-    // 过滤掉当前正在编辑的日志
     const otherLogs = localTask.logs?.filter(log => 
       log.date !== date || log.startTime !== start || log.endTime !== end
     ) || [];
     
     return validateTimeRange(start, end, otherLogs);
-  };
+  }, [validateTimeRange, localTask.logs]);
 
-  // 处理双击开始编辑
   const handleDoubleClick = () => {
     setIsEditing(true);
   };
 
-  // 点击外部保存
+  const handleSave = useCallback(() => {
+    if (isEditing) {
+      onUpdate(localTask);
+      setIsEditing(false);
+    }
+  }, [isEditing, localTask, onUpdate]);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (formRef.current && !formRef.current.contains(e.target as Node)) {
-        if (isEditing) {
-          handleSave();
-        }
+        handleSave();
       }
     };
 
@@ -72,17 +70,8 @@ export default function TaskCard({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEditing, localTask]);
+  }, [isEditing, handleSave]);
 
-  // 保存编辑
-  const handleSave = () => {
-    if (isEditing) {
-      onUpdate(localTask);
-      setIsEditing(false);
-    }
-  };
-
-  // 处理任务完成状态变更
   const handleCompletedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const updatedTask = {
       ...localTask,
@@ -92,7 +81,6 @@ export default function TaskCard({
     onUpdate(updatedTask);
   };
 
-  // 处理临时任务状态变更
   const handleAdHocChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setLocalTask(prev => ({
       ...prev,
@@ -100,7 +88,6 @@ export default function TaskCard({
     }));
   };
 
-  // 计算持续时间
   const calculateDuration = (start: string, end: string) => {
     const [startH, startM] = start.split(':').map(Number);
     const [endH, endM] = end.split(':').map(Number);
@@ -111,7 +98,6 @@ export default function TaskCard({
     return endMinutes - startMinutes;
   };
 
-  // 添加工作记录
   const handleAddLog = () => {
     if (!newLog.startTime || !newLog.endTime) return;
     
@@ -121,21 +107,18 @@ export default function TaskCard({
       return;
     }
     
-    // 使用验证函数检查时间段是否重叠
     if (isTimeRangeOverlap(newLog.startTime, newLog.endTime, newLog.date)) {
       alert("该时间段与已有工作记录重叠，请选择其他时间段");
       return;
     }
     
-    const log: TaskLog = {
+    const log = {
       id: Date.now().toString(),
       ...newLog,
       duration
     };
     
     const updatedLogs = [...(localTask.logs || []), log];
-    
-    // 重新计算总时长
     const totalDuration = updatedLogs.reduce((sum, log) => sum + log.duration, 0);
     
     const updatedTask: Task = {
@@ -155,16 +138,8 @@ export default function TaskCard({
     });
   };
 
-  // 删除工作记录
   const handleDeleteLog = (logId: string) => {
-    // 查找要删除的日志
-    const logToDelete = localTask.logs?.find(log => log.id === logId);
-    if (!logToDelete) return;
-    
-    // 创建新的日志数组（不包含要删除的日志）
     const updatedLogs = localTask.logs?.filter(log => log.id !== logId) || [];
-    
-    // 重新计算总时长
     const totalDuration = updatedLogs.reduce((sum, log) => sum + log.duration, 0);
     
     const updatedTask: Task = {
@@ -177,12 +152,10 @@ export default function TaskCard({
     onUpdate(updatedTask);
   };
 
-  // 计算进度百分比
   const progressPercentage = localTask.estimatedHours && localTask.totalDuration
     ? Math.min(100, Math.round((localTask.totalDuration / (localTask.estimatedHours * 60)) * 100))
     : 0;
 
-  // 格式化日期显示
   const formatDate = (dateStr: string) => {
     return format(parseISO(dateStr), 'MM/dd');
   };
@@ -275,7 +248,6 @@ export default function TaskCard({
             </div>
           </div>
           
-          {/* 添加临时任务选项 */}
           <div className="flex items-center mt-2">
             <input
               type="checkbox"
@@ -307,7 +279,6 @@ export default function TaskCard({
       ) : (
         <div className="flex flex-col">
           <div className="flex items-start">
-            {/* 任务完成复选框 */}
             <input
               type="checkbox"
               checked={localTask.completed}
@@ -323,7 +294,6 @@ export default function TaskCard({
                     <p className="text-gray-600 mt-1">{localTask.description}</p>
                   )}
                   
-                  {/* 显示日期信息 */}
                   <div className="mt-1 text-sm text-gray-500">
                     {localTask.deadline && (
                       <p>截止日期: {formatDate(localTask.deadline)}</p>
@@ -341,7 +311,6 @@ export default function TaskCard({
                     </div>
                   )}
                   
-                  {/* 显示进度信息 */}
                   <div className="mt-2">
                     <div className="flex justify-between text-xs mb-1">
                       <span>进度: {progressPercentage}%</span>
@@ -387,7 +356,6 @@ export default function TaskCard({
             </div>
           </div>
           
-          {/* 工作记录区域 */}
           <div className="mt-3 border-t pt-3">
             <div className="flex justify-between items-center mb-2">
               <button

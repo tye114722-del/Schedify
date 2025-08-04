@@ -9,13 +9,12 @@ import {
   startOfMonth, 
   endOfMonth, 
   eachDayOfInterval, 
-  isSameMonth,
   isSameDay,
   startOfWeek,
   endOfWeek
 } from 'date-fns';
 import { db } from '@/lib/db';
-import * as XLSX from 'xlsx'; // 导入Excel处理库
+import * as XLSX from 'xlsx';
 
 import TaskForm from '@/components/TaskForm';
 import TaskCard from '@/components/TaskCard';
@@ -27,7 +26,6 @@ import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 
-// 辅助函数：判断时间范围是否重叠
 const isTimeRangeOverlap = (
   newStart: string, 
   newEnd: string, 
@@ -48,14 +46,11 @@ const isTimeRangeOverlap = (
   });
 };
 
-// 辅助函数：判断任务是否应该在指定日期显示
 const shouldTaskAppearOnDate = (task: Task, dateStr: string): boolean => {
-  // 临时任务只显示在创建当天
   if (task.isAdHoc) {
     return task.date === dateStr;
   }
   
-  // 检查当前日期是否在任务的开始日期和结束日期之间
   if (task.startDate && task.endDate) {
     const current = new Date(dateStr).getTime();
     const start = new Date(task.startDate).getTime();
@@ -64,11 +59,9 @@ const shouldTaskAppearOnDate = (task: Task, dateStr: string): boolean => {
     return current >= start && current <= end;
   }
   
-  // 没有设置日期范围的任务只显示在创建当天
   return task.date === dateStr;
 };
 
-// 颜色生成函数 - 为每个任务生成独特的颜色
 const generateTaskColor = (id: string) => {
   const colors = [
     'bg-blue-100 border-blue-200',
@@ -80,12 +73,10 @@ const generateTaskColor = (id: string) => {
     'bg-teal-100 border-teal-200',
   ];
   
-  // 基于任务ID生成稳定的颜色索引
   const charSum = id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
   return colors[charSum % colors.length];
 };
 
-// 可拖拽的任务卡片组件
 const DraggableTaskCard = ({ 
   task, 
   index, 
@@ -106,7 +97,7 @@ const DraggableTaskCard = ({
   const [{ isDragging }, drag] = useDrag({
     type: 'TASK',
     item: { index, id: task.id },
-    canDrag: !task.completed, // 禁止拖动已完成任务
+    canDrag: !task.completed,
     collect: (monitor) => ({
       isDragging: monitor.isDragging(),
     }),
@@ -160,17 +151,13 @@ export default function ScheduleManager() {
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [showTaskForm, setShowTaskForm] = useState(false);
-  const [isAdHoc, setIsAdHoc] = useState(false); // 控制任务类型
+  const [isAdHoc, setIsAdHoc] = useState(false);
 
-  // 创建 ref 来引用任务类型切换按钮
   const taskTypeRef = useRef<HTMLDivElement>(null);
-  // 创建 ref 来引用任务表单
   const formRef = useRef<HTMLDivElement>(null);
 
-  // 外部点击处理函数
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      // 检查点击是否发生在任务表单或任务类型切换按钮上
       const clickedOnForm = formRef.current?.contains(e.target as Node);
       const clickedOnTaskType = taskTypeRef.current?.contains(e.target as Node);
       
@@ -185,7 +172,6 @@ export default function ScheduleManager() {
     };
   }, []);
 
-  // 分离已完成和未完成的任务
   const { incompleteTasks, completedTasks } = useMemo(() => {
     const incomplete: Task[] = [];
     const completed: Task[] = [];
@@ -198,9 +184,7 @@ export default function ScheduleManager() {
       }
     });
     
-    // 按order值排序
     incomplete.sort((a, b) => a.order - b.order);
-    // 已完成任务按完成时间倒序
     completed.sort((a, b) => {
       const dateA = a.completedAt ? new Date(a.completedAt).getTime() : 0;
       const dateB = b.completedAt ? new Date(b.completedAt).getTime() : 0;
@@ -213,7 +197,6 @@ export default function ScheduleManager() {
     };
   }, [tasks]);
 
-  // 触摸事件处理函数
   const handleTouchStart = (e: React.TouchEvent) => {
     setTouchStartX(e.touches[0].clientX);
   };
@@ -233,7 +216,6 @@ export default function ScheduleManager() {
     }
   };
 
-  // 删除函数
   const deleteTask = useCallback(async (taskId: string) => {
     setLoading(true);
     try {
@@ -247,46 +229,37 @@ export default function ScheduleManager() {
     }
   }, []);
 
-  // 请求删除确认
   const requestDelete = (id: string) => {
     setTaskToDelete(id);
   };
   
-  // 键盘快捷键
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'ArrowLeft') {
+      if (view === 'day') prevDay();
+      else prevMonth();
+    } else if (e.key === 'ArrowRight') {
+      if (view === 'day') nextDay();
+      else nextMonth();
+    } else if (e.key === 't' || e.key === 'T') {
+      goToday();
+    } else if (e.key === 'Escape' && showTaskForm) {
+      setShowTaskForm(false);
+    }
+  }, [view, showTaskForm]);
+  
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') {
-        if (view === 'day') prevDay();
-        else prevMonth();
-      } else if (e.key === 'ArrowRight') {
-        if (view === 'day') nextDay();
-        else nextMonth();
-      } else if (e.key === 't' || e.key === 'T') {
-        goToday();
-      } else if (e.key === 'Escape' && showTaskForm) {
-        setShowTaskForm(false);
-      }
-    };
-    
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [view, currentDate, showTaskForm]);
+  }, [handleKeyDown]);
 
-  // 更新后的 loadTasks 函数
   const loadTasks = useCallback(async () => {
     setLoading(true);
     try {
       const dateStr = format(currentDate, 'yyyy-MM-dd');
-      
-      // 获取所有任务（需要检查日期范围）
       const allTasks = await db.getAllTasks();
-      
-      // 筛选出在任务周期内的任务
       const filteredTasks = allTasks.filter(task => 
         shouldTaskAppearOnDate(task, dateStr)
       );
-      
-      // 确保任务有 order 属性
       const tasksWithOrder = filteredTasks.map((task, index) => ({
         ...task,
         order: task.order ?? index
@@ -300,28 +273,20 @@ export default function ScheduleManager() {
     }
   }, [currentDate]);
 
-  // 更新后的 loadMonthTasks 函数 - 修复月视图任务显示问题
   const loadMonthTasks = useCallback(async () => {
     setLoading(true);
     try {
       const monthStart = startOfMonth(currentDate);
       const monthEnd = endOfMonth(currentDate);
-      
-      // 获取所有任务
       const allTasks = await db.getAllTasks();
-      
-      // 获取月份中的所有日期
       const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
-      
       const grouped: Record<string, Task[]> = {};
       
-      // 初始化每天的空数组
       daysInMonth.forEach(day => {
         const dateStr = format(day, 'yyyy-MM-dd');
         grouped[dateStr] = [];
       });
       
-      // 对每个任务，判断它在当前月份的哪些天出现
       allTasks.forEach(task => {
         daysInMonth.forEach(day => {
           const dateStr = format(day, 'yyyy-MM-dd');
@@ -339,7 +304,6 @@ export default function ScheduleManager() {
     }
   }, [currentDate]);
 
-  // 数据加载
   useEffect(() => {
     if (view === 'day') {
       loadTasks();
@@ -348,7 +312,6 @@ export default function ScheduleManager() {
     }
   }, [currentDate, view, refreshTrigger, loadTasks, loadMonthTasks]);
 
-  // 重置方向状态
   useEffect(() => {
     if (direction !== 0) {
       const timer = setTimeout(() => {
@@ -360,11 +323,9 @@ export default function ScheduleManager() {
     }
   }, [direction]);
 
-  // 更新后的 handleAddTask 函数
   const handleAddTask = useCallback(async (task: Omit<Task, 'id'>) => {
     setLoading(true);
     try {
-      // 初始化日志和总时长
       const newTask = {
         ...task,
         order: incompleteTasks.length,
@@ -383,20 +344,15 @@ export default function ScheduleManager() {
     } finally {
       setLoading(false);
     }
-  }, [incompleteTasks]); // 依赖未完成任务数量
+  }, [incompleteTasks]);
 
-  // 优化后的 handleUpdateTask 函数 - 直接使用传递的任务数据
   const handleUpdateTask = useCallback(async (task: Task) => {
     setLoading(true);
     try {
-      // 直接使用传递的任务数据（包含更新后的logs和totalDuration）
       const updatedTask = { ...task };
-      
-      // 查找原始任务以检查完成状态变化
       const originalTask = tasks.find(t => t.id === task.id);
       if (!originalTask) return;
       
-      // 如果任务完成状态发生变化，更新完成时间
       if (originalTask.completed !== task.completed) {
         updatedTask.completedAt = task.completed ? new Date().toISOString() : undefined;
       }
@@ -410,13 +366,9 @@ export default function ScheduleManager() {
     }
   }, [tasks]);
 
-  // 移动任务函数 (用于拖拽排序)
   const moveTask = useCallback((dragIndex: number, hoverIndex: number) => {
     setTasks((prevTasks) => {
-      // 只操作未完成的任务
       const newTasks = [...prevTasks];
-      
-      // 找到拖拽任务和目标位置在完整列表中的实际索引
       const incomplete = newTasks.filter(t => !t.completed);
       const dragId = incomplete[dragIndex]?.id;
       const hoverId = incomplete[hoverIndex]?.id;
@@ -428,11 +380,9 @@ export default function ScheduleManager() {
       
       if (dragActualIndex === -1 || hoverActualIndex === -1) return prevTasks;
       
-      // 移动任务
       const [draggedTask] = newTasks.splice(dragActualIndex, 1);
       newTasks.splice(hoverActualIndex, 0, draggedTask);
       
-      // 更新排序索引（只更新未完成任务的order）
       let orderCounter = 0;
       const updatedTasks = newTasks.map(task => {
         if (!task.completed) {
@@ -444,7 +394,6 @@ export default function ScheduleManager() {
         return task;
       });
       
-      // 批量更新任务顺序
       const tasksToUpdate = updatedTasks.filter(t => !t.completed);
       db.batchUpdateTaskOrder(tasksToUpdate);
       
@@ -452,71 +401,59 @@ export default function ScheduleManager() {
     });
   }, []);
 
-  // 导航函数
-  const nextDay = () => {
+  const nextDay = useCallback(() => {
     setDirection(1);
     setCurrentDate(addDays(currentDate, 1));
-  };
+  }, [currentDate]);
 
-  const prevDay = () => {
+  const prevDay = useCallback(() => {
     setDirection(-1);
     setCurrentDate(subDays(currentDate, 1));
-  };
+  }, [currentDate]);
 
-  const nextMonth = () => {
+  const nextMonth = useCallback(() => {
     setDirection(1);
     setCurrentDate(addMonths(currentDate, 1));
-  };
+  }, [currentDate]);
 
-  const prevMonth = () => {
+  const prevMonth = useCallback(() => {
     setDirection(-1);
     setCurrentDate(subMonths(currentDate, 1));
-  };
+  }, [currentDate]);
 
   const goToday = () => {
     setDirection(0);
     setCurrentDate(new Date());
   };
 
-  // 视图切换函数
   const changeView = (newView: 'day' | 'month') => {
     setDirection(0);
     setView(newView);
   };
 
-  // 处理日期点击事件
   const handleDateClick = (day: Date) => {
     setCurrentDate(day);
     setView('day');
   };
 
-  // 导出周报函数
   const exportWeeklyReport = async () => {
     setLoading(true);
     try {
-      // 1. 获取当前周的周一和周日
       const today = new Date();
-      const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 }); // 周一作为一周的开始
-      const endOfWeekDate = endOfWeek(today, { weekStartsOn: 1 }); // 周日作为一周的结束
-      
-      // 2. 获取一周内的所有任务
+      const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 });
+      const endOfWeekDate = endOfWeek(today, { weekStartsOn: 1 });
       const allTasks = await db.getAllTasks();
-      
-      // 3. 组织每日任务数据
       const weeklyData: Record<string, any[]> = {};
       const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
       
-      // 初始化每日数据
       for (let i = 0; i < 7; i++) {
         const day = new Date(startOfWeekDate);
         day.setDate(startOfWeekDate.getDate() + i);
         const dateStr = format(day, 'yyyy-MM-dd');
         weeklyData[days[i]] = [];
         
-        // 筛选当天的任务
         const dailyTasks = allTasks.filter(task => shouldTaskAppearOnDate(task, dateStr));
         
-        // 收集任务的工作记录
         dailyTasks.forEach(task => {
           if (task.logs && task.logs.length > 0) {
             task.logs.forEach(log => {
@@ -531,7 +468,6 @@ export default function ScheduleManager() {
               });
             });
           } else {
-            // 没有工作记录的任务
             weeklyData[days[i]].push({
               '任务名称': task.title,
               '任务描述': task.description || '',
@@ -544,7 +480,6 @@ export default function ScheduleManager() {
           }
         });
         
-        // 如果没有任务，添加空行
         if (weeklyData[days[i]].length === 0) {
           weeklyData[days[i]].push({
             '任务名称': '无任务记录',
@@ -558,16 +493,13 @@ export default function ScheduleManager() {
         }
       }
       
-      // 4. 创建工作簿和工作表
       const wb = XLSX.utils.book_new();
       
-      // 5. 为每一天创建工作表
       days.forEach(day => {
         const ws = XLSX.utils.json_to_sheet(weeklyData[day]);
         XLSX.utils.book_append_sheet(wb, ws, day);
       });
       
-      // 6. 添加汇总表
       const summaryData = days.map(day => ({
         '日期': day,
         '任务数量': weeklyData[day].filter(item => item['任务名称'] !== '无任务记录').length,
@@ -582,7 +514,6 @@ export default function ScheduleManager() {
         }, 0)
       }));
       
-      // 格式化工作时间
       summaryData.forEach(item => {
         item['总工作时间'] = `${Math.floor(item['总工作时间']/60)}小时${item['总工作时间']%60}分钟`;
       });
@@ -590,7 +521,6 @@ export default function ScheduleManager() {
       const summaryWs = XLSX.utils.json_to_sheet(summaryData);
       XLSX.utils.book_append_sheet(wb, summaryWs, '周汇总');
       
-      // 7. 导出文件
       const weekRange = `${format(startOfWeekDate, 'yyyyMMdd')}-${format(endOfWeekDate, 'yyyyMMdd')}`;
       XLSX.writeFile(wb, `工作周报_${weekRange}.xlsx`);
       
@@ -602,7 +532,6 @@ export default function ScheduleManager() {
     }
   };
 
-  // 日历视图组件
   const CalendarView = () => {
     const monthStart = startOfMonth(currentDate);
     const monthEnd = endOfMonth(currentDate);
@@ -760,7 +689,6 @@ export default function ScheduleManager() {
           </div>
         )}
         
-        {/* 包裹视图内容 */}
         <AnimatePresence mode="wait">
           <motion.div
             key={view === 'day' ? currentDate.toISOString() : format(currentDate, 'yyyy-MM')}
@@ -873,7 +801,7 @@ export default function ScheduleManager() {
                       <button
                         onClick={() => {
                           setShowTaskForm(!showTaskForm);
-                          setIsAdHoc(false); // 默认显示常规任务
+                          setIsAdHoc(false);
                         }}
                         className="flex items-center px-3 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
                       >
@@ -884,7 +812,6 @@ export default function ScheduleManager() {
                       </button>
                     </div>
                     
-                    {/* 任务类型切换器 - 添加 ref */}
                     {showTaskForm && (
                       <div 
                         ref={taskTypeRef}
@@ -917,7 +844,6 @@ export default function ScheduleManager() {
                       </div>
                     )}
                     
-                    {/* 任务表单 */}
                     {showTaskForm && (
                       <motion.div
                         ref={formRef}
@@ -930,12 +856,11 @@ export default function ScheduleManager() {
                           date={format(currentDate, 'yyyy-MM-dd')} 
                           onSubmit={handleAddTask} 
                           onCancel={() => setShowTaskForm(false)}
-                          isAdHoc={isAdHoc} // 将按钮状态传递给TaskForm
+                          isAdHoc={isAdHoc}
                         />
                       </motion.div>
                     )}
                     
-                    {/* 任务列表 */}
                     {tasks.length === 0 ? (
                       <div className="bg-gray-50 rounded-lg p-8 text-center">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mx-auto text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -950,7 +875,6 @@ export default function ScheduleManager() {
                       </div>
                     ) : (
                       <div className="space-y-6">
-                        {/* 未完成任务区域 */}
                         {incompleteTasks.length > 0 && (
                           <div>
                             <h4 className="font-bold text-gray-700 mb-3 flex items-center">
@@ -975,7 +899,6 @@ export default function ScheduleManager() {
                           </div>
                         )}
                         
-                        {/* 已完成任务区域 */}
                         {completedTasks.length > 0 && (
                           <div>
                             <h4 className="font-bold text-gray-700 mb-3 flex items-center">
@@ -1010,7 +933,6 @@ export default function ScheduleManager() {
           </motion.div>
         </AnimatePresence>
 
-        {/* 删除确认弹窗 */}
         <AnimatePresence>
           {taskToDelete && (
             <motion.div
