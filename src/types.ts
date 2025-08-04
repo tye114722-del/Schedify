@@ -36,7 +36,7 @@ export interface Task {
   startDate?: string; // 任务开始日期 YYYY-MM-DD
   endDate?: string; // 任务结束日期 YYYY-MM-DD
   logs?: TaskLog[]; // 工作记录
-  totalDuration?: number; // 累计工作时长(分钟)
+  totalDuration: number; // 累计工作时长(分钟)
 }
 
 export interface Project {

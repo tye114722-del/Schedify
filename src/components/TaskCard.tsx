@@ -38,10 +38,6 @@ export default function TaskCard({
   const isTimeRangeOverlap = useCallback((start: string, end: string, date: string) => {
     if (!validateTimeRange) return false;
     
-    const otherLogs = localTask.logs?.filter(log => 
-      log.date !== date || log.startTime !== start || log.endTime !== end
-    ) || [];
-    
     return validateTimeRange(start, end);
   }, [validateTimeRange, localTask.logs]);
 
@@ -315,8 +311,8 @@ export default function TaskCard({
                     <div className="flex justify-between text-xs mb-1">
                       <span>进度: {progressPercentage}%</span>
                       <span>
-                        {Math.floor(localTask.totalDuration / 60)}小时
-                        {localTask.totalDuration % 60}分钟
+                        {Math.floor((localTask.totalDuration || 0) / 60)}小时
+                        {(localTask.totalDuration || 0) % 60}分钟
                       </span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2">
