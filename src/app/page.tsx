@@ -1,0 +1,1065 @@
+'use client';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { 
+  format, 
+  addDays, 
+  subDays, 
+  addMonths, 
+  subMonths, 
+  startOfMonth, 
+  endOfMonth, 
+  eachDayOfInterval, 
+  isSameMonth,
+  isSameDay,
+  startOfWeek,
+  endOfWeek
+} from 'date-fns';
+import { db } from '@/lib/db';
+import * as XLSX from 'xlsx'; // 导入Excel处理库
+
+import TaskForm from '@/components/TaskForm';
+import TaskCard from '@/components/TaskCard';
+
+import { Task } from '@/types';
+
+import { motion, AnimatePresence } from 'framer-motion';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
+import { useDrag, useDrop } from 'react-dnd';
+
+// 辅助函数：判断时间范围是否重叠
+const isTimeRangeOverlap = (
+  newStart: string, 
+  newEnd: string, 
+  existingLogs: { startTime: string; endTime: string }[]
+): boolean => {
+  const newStartTime = new Date(`1970-01-01T${newStart}`).getTime();
+  const newEndTime = new Date(`1970-01-01T${newEnd}`).getTime();
+  
+  return existingLogs.some(log => {
+    const logStartTime = new Date(`1970-01-01T${log.startTime}`).getTime();
+    const logEndTime = new Date(`1970-01-01T${log.endTime}`).getTime();
+    
+    return (
+      (newStartTime >= logStartTime && newStartTime < logEndTime) ||
+      (newEndTime > logStartTime && newEndTime <= logEndTime) ||
+      (newStartTime <= logStartTime && newEndTime >= logEndTime)
+    );
+  });
+};
+
+// 辅助函数：判断任务是否应该在指定日期显示
+const shouldTaskAppearOnDate = (task: Task, dateStr: string): boolean => {
+  // 临时任务只显示在创建当天
+  if (task.isAdHoc) {
+    return task.date === dateStr;
+  }
+  
+  // 检查当前日期是否在任务的开始日期和结束日期之间
+  if (task.startDate && task.endDate) {
+    const current = new Date(dateStr).getTime();
+    const start = new Date(task.startDate).getTime();
+    const end = new Date(task.endDate).getTime();
+    
+    return current >= start && current <= end;
+  }
+  
+  // 没有设置日期范围的任务只显示在创建当天
+  return task.date === dateStr;
+};
+
+// 颜色生成函数 - 为每个任务生成独特的颜色
+const generateTaskColor = (id: string) => {
+  const colors = [
+    'bg-blue-100 border-blue-200',
+    'bg-green-100 border-green-200',
+    'bg-yellow-100 border-yellow-200',
+    'bg-purple-100 border-purple-200',
+    'bg-pink-100 border-pink-200',
+    'bg-indigo-100 border-indigo-200',
+    'bg-teal-100 border-teal-200',
+  ];
+  
+  // 基于任务ID生成稳定的颜色索引
+  const charSum = id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return colors[charSum % colors.length];
+};
+
+// 可拖拽的任务卡片组件
+const DraggableTaskCard = ({ 
+  task, 
+  index, 
+  moveTask, 
+  onUpdate, 
+  onDelete,
+  taskColor
+}: {
+  task: Task;
+  index: number;
+  moveTask: (dragIndex: number, hoverIndex: number) => void;
+  onUpdate: (task: Task) => void;
+  onDelete: (id: string) => void;
+  taskColor: string;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  
+  const [{ isDragging }, drag] = useDrag({
+    type: 'TASK',
+    item: { index, id: task.id },
+    canDrag: !task.completed, // 禁止拖动已完成任务
+    collect: (monitor) => ({
+      isDragging: monitor.isDragging(),
+    }),
+  });
+
+  const [, drop] = useDrop({
+    accept: 'TASK',
+    hover(item: { index: number; id: string }) {
+      if (!ref.current || task.completed) return;
+      
+      const dragIndex = item.index;
+      const hoverIndex = index;
+      
+      if (dragIndex === hoverIndex) return;
+      
+      moveTask(dragIndex, hoverIndex);
+      item.index = hoverIndex;
+    },
+  });
+
+  drag(drop(ref));
+
+  return (
+    <div
+      ref={ref}
+      style={{ opacity: isDragging ? 0.5 : 1 }}
+      className={`cursor-move ${task.completed ? 'cursor-default' : ''}`}
+    >
+      <TaskCard 
+        task={task} 
+        onUpdate={onUpdate} 
+        onDelete={onDelete}
+        taskColor={taskColor}
+        validateTimeRange={(startTime, endTime) => 
+          isTimeRangeOverlap(startTime, endTime, task.logs)
+        }
+      />
+    </div>
+  );
+};
+
+export default function ScheduleManager() {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [monthTasks, setMonthTasks] = useState<Record<string, Task[]>>({});
+  const [view, setView] = useState<'day' | 'month'>('day');
+  const [touchStartX, setTouchStartX] = useState(0);
+  const [direction, setDirection] = useState(0);
+  const prevDirectionRef = useRef(0);
+  const [loading, setLoading] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [isAdHoc, setIsAdHoc] = useState(false); // 控制任务类型
+
+  // 创建 ref 来引用任务类型切换按钮
+  const taskTypeRef = useRef<HTMLDivElement>(null);
+  // 创建 ref 来引用任务表单
+  const formRef = useRef<HTMLDivElement>(null);
+
+  // 外部点击处理函数
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      // 检查点击是否发生在任务表单或任务类型切换按钮上
+      const clickedOnForm = formRef.current?.contains(e.target as Node);
+      const clickedOnTaskType = taskTypeRef.current?.contains(e.target as Node);
+      
+      if (!clickedOnForm && !clickedOnTaskType) {
+        setShowTaskForm(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // 分离已完成和未完成的任务
+  const { incompleteTasks, completedTasks } = useMemo(() => {
+    const incomplete: Task[] = [];
+    const completed: Task[] = [];
+    
+    tasks.forEach(task => {
+      if (task.completed) {
+        completed.push(task);
+      } else {
+        incomplete.push(task);
+      }
+    });
+    
+    // 按order值排序
+    incomplete.sort((a, b) => a.order - b.order);
+    // 已完成任务按完成时间倒序
+    completed.sort((a, b) => {
+      const dateA = a.completedAt ? new Date(a.completedAt).getTime() : 0;
+      const dateB = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+      return dateB - dateA;
+    });
+    
+    return {
+      incompleteTasks: incomplete,
+      completedTasks: completed
+    };
+  }, [tasks]);
+
+  // 触摸事件处理函数
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setTouchStartX(e.touches[0].clientX);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    const touchEndX = e.changedTouches[0].clientX;
+    const diff = touchStartX - touchEndX;
+    
+    if (Math.abs(diff) > 50) {
+      if (diff > 0) {
+        if (view === 'day') nextDay();
+        else nextMonth();
+      } else {
+        if (view === 'day') prevDay();
+        else prevMonth();
+      }
+    }
+  };
+
+  // 删除函数
+  const deleteTask = useCallback(async (taskId: string) => {
+    setLoading(true);
+    try {
+      await db.deleteTask(taskId);
+      setRefreshTrigger(prev => prev + 1);
+      setTaskToDelete(null);
+    } catch (error) {
+      console.error('删除任务失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // 请求删除确认
+  const requestDelete = (id: string) => {
+    setTaskToDelete(id);
+  };
+  
+  // 键盘快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        if (view === 'day') prevDay();
+        else prevMonth();
+      } else if (e.key === 'ArrowRight') {
+        if (view === 'day') nextDay();
+        else nextMonth();
+      } else if (e.key === 't' || e.key === 'T') {
+        goToday();
+      } else if (e.key === 'Escape' && showTaskForm) {
+        setShowTaskForm(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [view, currentDate, showTaskForm]);
+
+  // 更新后的 loadTasks 函数
+  const loadTasks = useCallback(async () => {
+    setLoading(true);
+    try {
+      const dateStr = format(currentDate, 'yyyy-MM-dd');
+      
+      // 获取所有任务（需要检查日期范围）
+      const allTasks = await db.getAllTasks();
+      
+      // 筛选出在任务周期内的任务
+      const filteredTasks = allTasks.filter(task => 
+        shouldTaskAppearOnDate(task, dateStr)
+      );
+      
+      // 确保任务有 order 属性
+      const tasksWithOrder = filteredTasks.map((task, index) => ({
+        ...task,
+        order: task.order ?? index
+      }));
+      
+      setTasks(tasksWithOrder);
+    } catch (error) {
+      console.error('加载任务失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [currentDate]);
+
+  // 更新后的 loadMonthTasks 函数 - 修复月视图任务显示问题
+  const loadMonthTasks = useCallback(async () => {
+    setLoading(true);
+    try {
+      const monthStart = startOfMonth(currentDate);
+      const monthEnd = endOfMonth(currentDate);
+      
+      // 获取所有任务
+      const allTasks = await db.getAllTasks();
+      
+      // 获取月份中的所有日期
+      const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
+      
+      const grouped: Record<string, Task[]> = {};
+      
+      // 初始化每天的空数组
+      daysInMonth.forEach(day => {
+        const dateStr = format(day, 'yyyy-MM-dd');
+        grouped[dateStr] = [];
+      });
+      
+      // 对每个任务，判断它在当前月份的哪些天出现
+      allTasks.forEach(task => {
+        daysInMonth.forEach(day => {
+          const dateStr = format(day, 'yyyy-MM-dd');
+          if (shouldTaskAppearOnDate(task, dateStr)) {
+            grouped[dateStr].push(task);
+          }
+        });
+      });
+      
+      setMonthTasks(grouped);
+    } catch (error) {
+      console.error('加载月任务失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [currentDate]);
+
+  // 数据加载
+  useEffect(() => {
+    if (view === 'day') {
+      loadTasks();
+    } else {
+      loadMonthTasks();
+    }
+  }, [currentDate, view, refreshTrigger, loadTasks, loadMonthTasks]);
+
+  // 重置方向状态
+  useEffect(() => {
+    if (direction !== 0) {
+      const timer = setTimeout(() => {
+        setDirection(0);
+        prevDirectionRef.current = direction;
+      }, 200);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [direction]);
+
+  // 更新后的 handleAddTask 函数
+  const handleAddTask = useCallback(async (task: Omit<Task, 'id'>) => {
+    setLoading(true);
+    try {
+      // 初始化日志和总时长
+      const newTask = {
+        ...task,
+        order: incompleteTasks.length,
+        logs: [],
+        totalDuration: 0
+      };
+      
+      const createdTask = await db.addTask(newTask);
+      setRefreshTrigger(prev => prev + 1);
+      setShowTaskForm(false);
+      setIsAdHoc(false);
+      return createdTask;
+    } catch (error) {
+      console.error('添加任务失败:', error);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }, [incompleteTasks]); // 依赖未完成任务数量
+
+  // 优化后的 handleUpdateTask 函数 - 直接使用传递的任务数据
+  const handleUpdateTask = useCallback(async (task: Task) => {
+    setLoading(true);
+    try {
+      // 直接使用传递的任务数据（包含更新后的logs和totalDuration）
+      const updatedTask = { ...task };
+      
+      // 查找原始任务以检查完成状态变化
+      const originalTask = tasks.find(t => t.id === task.id);
+      if (!originalTask) return;
+      
+      // 如果任务完成状态发生变化，更新完成时间
+      if (originalTask.completed !== task.completed) {
+        updatedTask.completedAt = task.completed ? new Date().toISOString() : undefined;
+      }
+      
+      await db.updateTask(updatedTask);
+      setRefreshTrigger(prev => prev + 1);
+    } catch (error) {
+      console.error('更新任务失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [tasks]);
+
+  // 移动任务函数 (用于拖拽排序)
+  const moveTask = useCallback((dragIndex: number, hoverIndex: number) => {
+    setTasks((prevTasks) => {
+      // 只操作未完成的任务
+      const newTasks = [...prevTasks];
+      
+      // 找到拖拽任务和目标位置在完整列表中的实际索引
+      const incomplete = newTasks.filter(t => !t.completed);
+      const dragId = incomplete[dragIndex]?.id;
+      const hoverId = incomplete[hoverIndex]?.id;
+      
+      if (!dragId || !hoverId) return prevTasks;
+      
+      const dragActualIndex = newTasks.findIndex(t => t.id === dragId);
+      const hoverActualIndex = newTasks.findIndex(t => t.id === hoverId);
+      
+      if (dragActualIndex === -1 || hoverActualIndex === -1) return prevTasks;
+      
+      // 移动任务
+      const [draggedTask] = newTasks.splice(dragActualIndex, 1);
+      newTasks.splice(hoverActualIndex, 0, draggedTask);
+      
+      // 更新排序索引（只更新未完成任务的order）
+      let orderCounter = 0;
+      const updatedTasks = newTasks.map(task => {
+        if (!task.completed) {
+          return {
+            ...task,
+            order: orderCounter++
+          };
+        }
+        return task;
+      });
+      
+      // 批量更新任务顺序
+      const tasksToUpdate = updatedTasks.filter(t => !t.completed);
+      db.batchUpdateTaskOrder(tasksToUpdate);
+      
+      return updatedTasks;
+    });
+  }, []);
+
+  // 导航函数
+  const nextDay = () => {
+    setDirection(1);
+    setCurrentDate(addDays(currentDate, 1));
+  };
+
+  const prevDay = () => {
+    setDirection(-1);
+    setCurrentDate(subDays(currentDate, 1));
+  };
+
+  const nextMonth = () => {
+    setDirection(1);
+    setCurrentDate(addMonths(currentDate, 1));
+  };
+
+  const prevMonth = () => {
+    setDirection(-1);
+    setCurrentDate(subMonths(currentDate, 1));
+  };
+
+  const goToday = () => {
+    setDirection(0);
+    setCurrentDate(new Date());
+  };
+
+  // 视图切换函数
+  const changeView = (newView: 'day' | 'month') => {
+    setDirection(0);
+    setView(newView);
+  };
+
+  // 处理日期点击事件
+  const handleDateClick = (day: Date) => {
+    setCurrentDate(day);
+    setView('day');
+  };
+
+  // 导出周报函数
+  const exportWeeklyReport = async () => {
+    setLoading(true);
+    try {
+      // 1. 获取当前周的周一和周日
+      const today = new Date();
+      const startOfWeekDate = startOfWeek(today, { weekStartsOn: 1 }); // 周一作为一周的开始
+      const endOfWeekDate = endOfWeek(today, { weekStartsOn: 1 }); // 周日作为一周的结束
+      
+      // 2. 获取一周内的所有任务
+      const allTasks = await db.getAllTasks();
+      
+      // 3. 组织每日任务数据
+      const weeklyData: Record<string, any[]> = {};
+      const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+      
+      // 初始化每日数据
+      for (let i = 0; i < 7; i++) {
+        const day = new Date(startOfWeekDate);
+        day.setDate(startOfWeekDate.getDate() + i);
+        const dateStr = format(day, 'yyyy-MM-dd');
+        weeklyData[days[i]] = [];
+        
+        // 筛选当天的任务
+        const dailyTasks = allTasks.filter(task => shouldTaskAppearOnDate(task, dateStr));
+        
+        // 收集任务的工作记录
+        dailyTasks.forEach(task => {
+          if (task.logs && task.logs.length > 0) {
+            task.logs.forEach(log => {
+              weeklyData[days[i]].push({
+                '任务名称': task.title,
+                '任务描述': task.description || '',
+                '开始时间': log.startTime,
+                '结束时间': log.endTime,
+                '持续时间': `${Math.floor(log.duration/60)}小时${log.duration%60}分钟`,
+                '总时长': `${Math.floor(task.totalDuration/60)}小时${task.totalDuration%60}分钟`,
+                '状态': task.completed ? '已完成' : '进行中'
+              });
+            });
+          } else {
+            // 没有工作记录的任务
+            weeklyData[days[i]].push({
+              '任务名称': task.title,
+              '任务描述': task.description || '',
+              '开始时间': '无记录',
+              '结束时间': '无记录',
+              '持续时间': '0分钟',
+              '总时长': `${Math.floor((task.totalDuration || 0)/60)}小时${(task.totalDuration || 0)%60}分钟`,
+              '状态': task.completed ? '已完成' : '进行中'
+            });
+          }
+        });
+        
+        // 如果没有任务，添加空行
+        if (weeklyData[days[i]].length === 0) {
+          weeklyData[days[i]].push({
+            '任务名称': '无任务记录',
+            '任务描述': '',
+            '开始时间': '',
+            '结束时间': '',
+            '持续时间': '',
+            '总时长': '',
+            '状态': ''
+          });
+        }
+      }
+      
+      // 4. 创建工作簿和工作表
+      const wb = XLSX.utils.book_new();
+      
+      // 5. 为每一天创建工作表
+      days.forEach(day => {
+        const ws = XLSX.utils.json_to_sheet(weeklyData[day]);
+        XLSX.utils.book_append_sheet(wb, ws, day);
+      });
+      
+      // 6. 添加汇总表
+      const summaryData = days.map(day => ({
+        '日期': day,
+        '任务数量': weeklyData[day].filter(item => item['任务名称'] !== '无任务记录').length,
+        '总工作时间': weeklyData[day].reduce((sum, item) => {
+          if (item['持续时间']) {
+            const match = item['持续时间'].match(/(\d+)小时(\d+)分钟/);
+            if (match) {
+              return sum + parseInt(match[1]) * 60 + parseInt(match[2]);
+            }
+          }
+          return sum;
+        }, 0)
+      }));
+      
+      // 格式化工作时间
+      summaryData.forEach(item => {
+        item['总工作时间'] = `${Math.floor(item['总工作时间']/60)}小时${item['总工作时间']%60}分钟`;
+      });
+      
+      const summaryWs = XLSX.utils.json_to_sheet(summaryData);
+      XLSX.utils.book_append_sheet(wb, summaryWs, '周汇总');
+      
+      // 7. 导出文件
+      const weekRange = `${format(startOfWeekDate, 'yyyyMMdd')}-${format(endOfWeekDate, 'yyyyMMdd')}`;
+      XLSX.writeFile(wb, `工作周报_${weekRange}.xlsx`);
+      
+    } catch (error) {
+      console.error('导出周报失败:', error);
+      alert('导出周报失败，请重试');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 日历视图组件
+  const CalendarView = () => {
+    const monthStart = startOfMonth(currentDate);
+    const monthEnd = endOfMonth(currentDate);
+    const days = eachDayOfInterval({ start: monthStart, end: monthEnd });
+    
+    const startDay = monthStart.getDay();
+    const endDay = monthEnd.getDay();
+    const prevMonthDays = Array.from({ length: startDay }, (_, i) => 
+      subDays(monthStart, startDay - i)
+    );
+    const nextMonthDays = Array.from({ length: 6 - endDay }, (_, i) => 
+      addDays(monthEnd, i + 1)
+    );
+    
+    return (
+      <div className="grid grid-cols-7 gap-1">
+        {['日', '一', '二', '三', '四', '五', '六'].map(day => (
+          <div key={day} className="text-center font-bold p-2 text-gray-700 bg-gray-100 rounded">
+            {day}
+          </div>
+        ))}
+        
+        {prevMonthDays.map(day => (
+          <div 
+            key={day.toString()}
+            className="text-center p-1 border rounded min-h-[100px] flex flex-col bg-gray-50 text-gray-400"
+          >
+            <div className="text-sm font-semibold">{format(day, 'd')}</div>
+          </div>
+        ))}
+        
+        {days.map(day => {
+          const dateKey = format(day, 'yyyy-MM-dd');
+          const dayTasks = monthTasks[dateKey] || [];
+          const isToday = isSameDay(day, new Date());
+          const isCurrent = format(day, 'yyyy-MM-dd') === format(currentDate, 'yyyy-MM-dd');
+          
+          return (
+            <div 
+              key={day.toString()}
+              className={`text-center p-1 border rounded min-h-[100px] flex flex-col cursor-pointer
+                ${isToday ? 'border-2 border-blue-500' : ''}
+                ${isCurrent ? 'bg-blue-100' : 'bg-white hover:bg-gray-50'}`}
+              onClick={() => handleDateClick(day)}
+            >
+              <div className="flex justify-between items-center">
+                <div className={`text-sm font-semibold ${isToday ? 'text-blue-600' : ''}`}>
+                  {format(day, 'd')}
+                </div>
+                {dayTasks.length > 0 && (
+                  <span className="text-xs bg-blue-500 text-white rounded-full w-5 h-5 flex items-center justify-center">
+                    {dayTasks.length}
+                  </span>
+                )}
+              </div>
+              
+              <div className="flex-1 overflow-y-auto mt-1 space-y-1 max-h-[60px]">
+                {dayTasks.slice(0, 3).map(task => (
+                  <div 
+                    key={task.id} 
+                    className={`text-xs truncate p-1 rounded border ${
+                      task.completed 
+                        ? 'bg-gray-100 border-gray-200 text-gray-500' 
+                        : 'bg-blue-50 border-blue-100'
+                    }`}
+                    title={task.title}
+                  >
+                    {task.title}
+                  </div>
+                ))}
+                {dayTasks.length > 3 && (
+                  <div className="text-xs text-gray-500 text-center">
+                    +{dayTasks.length - 3}个任务
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        
+        {nextMonthDays.map(day => (
+          <div 
+            key={day.toString()}
+            className="text-center p-1 border rounded min-h-[100px] flex flex-col bg-gray-50 text-gray-400"
+          >
+            <div className="text-sm font-semibold">{format(day, 'd')}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <DndProvider backend={HTML5Backend}>
+      <div className="max-w-6xl mx-auto p-4 min-h-screen bg-gray-50">
+        <header className="mb-8">
+          <h1 className="text-3xl font-bold text-center mb-4 text-blue-700">日程管理系统</h1>
+          
+          <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+            <div className="flex space-x-2">
+              <button 
+                onClick={() => changeView('day')} 
+                className={`px-4 py-2 rounded transition-all ${
+                  view === 'day' 
+                    ? 'bg-blue-600 text-white shadow-md' 
+                    : 'bg-gray-200 hover:bg-gray-300'
+                }`}
+              >
+                每日视图
+              </button>
+              <button 
+                onClick={() => changeView('month')} 
+                className={`px-4 py-2 rounded transition-all ${
+                  view === 'month' 
+                    ? 'bg-blue-600 text-white shadow-md' 
+                    : 'bg-gray-200 hover:bg-gray-300'
+                }`}
+              >
+                月计划
+              </button>
+            </div>
+            
+            <div className="flex space-x-2">
+              <button 
+                onClick={exportWeeklyReport}
+                className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition-colors shadow flex items-center"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                导出周报
+              </button>
+              
+              <button 
+                onClick={goToday}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors shadow flex items-center"
+                title="回到今天 (快捷键: T)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                今天
+              </button>
+            </div>
+          </div>
+        </header>
+        
+        {loading && (
+          <div className="fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded shadow-lg flex items-center z-50">
+            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            加载中...
+          </div>
+        )}
+        
+        {/* 包裹视图内容 */}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={view === 'day' ? currentDate.toISOString() : format(currentDate, 'yyyy-MM')}
+            initial={{ 
+              opacity: 0, 
+              x: direction === 1 ? 50 : direction === -1 ? -50 : 0 
+            }}
+            animate={{ 
+              opacity: 1, 
+              x: 0 
+            }}
+            exit={{ 
+              opacity: 0, 
+              x: direction === 1 ? -50 : direction === -1 ? 50 : 0 
+            }}
+            transition={{ duration: 0.2 }}
+          >
+            {view === 'month' ? (
+              <div className="mb-8">
+                <div className="flex justify-center items-center mb-6">
+                  <button 
+                    onClick={prevMonth}
+                    className="p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center"
+                    title="上个月"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                    <span className="ml-1">上个月</span>
+                  </button>
+                  
+                  <h2 className="text-2xl font-bold mx-4 min-w-[180px] text-center text-blue-700">
+                    {format(currentDate, 'yyyy年MM月')}
+                  </h2>
+                  
+                  <button 
+                    onClick={nextMonth}
+                    className="p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center"
+                    title="下个月"
+                  >
+                    <span className="mr-1">下个月</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
+                
+                <div className="bg-white rounded-xl shadow-md p-4">
+                  <CalendarView />
+                </div>
+                
+                <div className="mt-6 bg-blue-50 p-4 rounded-lg">
+                  <h3 className="font-bold text-blue-700 mb-2">月视图说明</h3>
+                  <ul className="text-sm text-gray-700 list-disc pl-5 space-y-1">
+                    <li>点击日期可以切换到该日的详细视图</li>
+                    <li>蓝色边框表示今天是当前日期</li>
+                    <li>数字角标显示当天的任务数量</li>
+                    <li>每个日期格子里显示最多3个任务标题</li>
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <div 
+                className="bg-white rounded-xl shadow-md p-6"
+                onTouchStart={handleTouchStart}
+                onTouchEnd={handleTouchEnd}
+              >
+                <div className="flex flex-col sm:flex-row justify-between items-center mb-8">
+                  <div className="flex items-center mb-4 sm:mb-0">
+                    <button 
+                      onClick={prevDay}
+                      className="p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center"
+                      title="前一天"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                      <span className="ml-1">前一天</span>
+                    </button>
+                  </div>
+                  
+                  <h2 className="text-2xl font-bold text-blue-700">
+                    {format(currentDate, 'yyyy年MM月dd日')}
+                  </h2>
+                  
+                  <div className="flex items-center">
+                    <button 
+                      onClick={nextDay}
+                      className="p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center"
+                      title="后一天"
+                    >
+                      <span className="mr-1">后一天</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-6">
+                  <div className="bg-white rounded-lg shadow-sm p-4 border border-gray-200">
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-xl font-bold text-blue-700 flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                        今日任务
+                      </h3>
+                      
+                      <button
+                        onClick={() => {
+                          setShowTaskForm(!showTaskForm);
+                          setIsAdHoc(false); // 默认显示常规任务
+                        }}
+                        className="flex items-center px-3 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                        添加任务
+                      </button>
+                    </div>
+                    
+                    {/* 任务类型切换器 - 添加 ref */}
+                    {showTaskForm && (
+                      <div 
+                        ref={taskTypeRef}
+                        className="mb-4 flex justify-center"
+                      >
+                        <div className="inline-flex rounded-md shadow-sm" role="group">
+                          <button
+                            type="button"
+                            className={`px-4 py-2 text-sm font-medium rounded-l-lg border ${
+                              !isAdHoc 
+                                ? 'bg-blue-600 text-white border-blue-600' 
+                                : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100'
+                            }`}
+                            onClick={() => setIsAdHoc(false)}
+                          >
+                            常规任务
+                          </button>
+                          <button
+                            type="button"
+                            className={`px-4 py-2 text-sm font-medium rounded-r-md border ${
+                              isAdHoc 
+                                ? 'bg-orange-500 text-white border-orange-500' 
+                                : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100'
+                            }`}
+                            onClick={() => setIsAdHoc(true)}
+                          >
+                            临时任务
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* 任务表单 */}
+                    {showTaskForm && (
+                      <motion.div
+                        ref={formRef}
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="mb-6"
+                      >
+                        <TaskForm 
+                          date={format(currentDate, 'yyyy-MM-dd')} 
+                          onSubmit={handleAddTask} 
+                          onCancel={() => setShowTaskForm(false)}
+                          isAdHoc={isAdHoc} // 将按钮状态传递给TaskForm
+                        />
+                      </motion.div>
+                    )}
+                    
+                    {/* 任务列表 */}
+                    {tasks.length === 0 ? (
+                      <div className="bg-gray-50 rounded-lg p-8 text-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mx-auto text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p className="text-gray-500">今日暂无任务</p>
+                        <p className="text-gray-400 text-sm mt-2">
+                          {showTaskForm 
+                            ? "请填写任务信息" 
+                            : "点击右上角按钮添加新任务"}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-6">
+                        {/* 未完成任务区域 */}
+                        {incompleteTasks.length > 0 && (
+                          <div>
+                            <h4 className="font-bold text-gray-700 mb-3 flex items-center">
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                              </svg>
+                              未完成的任务 ({incompleteTasks.length})
+                            </h4>
+                            <div className="space-y-3">
+                              {incompleteTasks.map((task, index) => (
+                                <DraggableTaskCard 
+                                  key={task.id} 
+                                  task={task} 
+                                  index={index}
+                                  moveTask={moveTask}
+                                  onUpdate={handleUpdateTask}
+                                  onDelete={requestDelete}
+                                  taskColor={generateTaskColor(task.id)}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* 已完成任务区域 */}
+                        {completedTasks.length > 0 && (
+                          <div>
+                            <h4 className="font-bold text-gray-700 mb-3 flex items-center">
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              已完成的任务 ({completedTasks.length})
+                            </h4>
+                            <div className="space-y-3">
+                              {completedTasks.map((task) => (
+                                <div key={task.id}>
+                                  <TaskCard 
+                                    task={task} 
+                                    onUpdate={handleUpdateTask}
+                                    onDelete={requestDelete}
+                                    taskColor="bg-gray-100 border-gray-200"
+                                    validateTimeRange={(startTime, endTime) => 
+                                      isTimeRangeOverlap(startTime, endTime, task.logs)
+                                    }
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
+
+        {/* 删除确认弹窗 */}
+        <AnimatePresence>
+          {taskToDelete && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+              onClick={() => setTaskToDelete(null)}
+            >
+              <motion.div 
+                className="bg-white rounded-xl p-6 max-w-md w-full shadow-xl"
+                initial={{ scale: 0.9, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.9, y: 20 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="text-xl font-bold text-red-600 mb-4 flex items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  确认删除
+                </h3>
+                
+                <p className="mb-6 text-gray-700">
+                  您确定要删除这个任务吗？此操作不可撤销，任务将被永久删除。
+                </p>
+                
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => setTaskToDelete(null)}
+                    className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => deleteTask(taskToDelete)}
+                    className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    确认删除
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </DndProvider>
+  );
+}

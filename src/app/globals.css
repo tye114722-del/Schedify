@@ -1,0 +1,47 @@
+@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 添加按钮悬停效果 */
+.hover-effect {
+  transition: all 0.2s ease;
+}
+
+.hover-effect:hover {
+  transform: scale(1.05);
+  background-color: rgba(229, 231, 235, 0.5);
+}
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+/* 添加拖拽时的视觉效果 */
+.cursor-move {
+  cursor: move;
+}
+
+.drag-over {
+  border: 2px dashed #3b82f6;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
